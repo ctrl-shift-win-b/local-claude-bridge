@@ -72,7 +72,7 @@ try {
     $env:ANTHROPIC_AUTH_TOKEN           = "local"
     $env:ANTHROPIC_MODEL                = "local-model"
     $env:CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
-    $env:CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "65"
+    $env:CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "75"
 
     if ($PassThruArgs) {
         # & claude --debug @PassThruArgs

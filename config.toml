@@ -1,0 +1,28 @@
+[bridge]
+host = "127.0.0.1"                       # Bind address (fix for security issue #2)
+port = 1235                              # Anthropic-compatible API listen port
+llama_base_url = "http://localhost:1234" # OpenAI-compatible llama.cpp server URL
+
+[bridge.logging]
+debug = false                            # Enable verbose DEBUG messages in bridge.log
+
+[poke]
+enabled = true
+max_retries = 2
+delay_seconds = 1.0
+
+[vision]
+mode = "external"                        # One of: disabled, internal, external
+api_url = "http://192.168.50.38:1234/v1/chat/completions"
+model = "qwen/qwen3-vl-4b"
+max_tokens = 4096
+temperature = 0.3
+timeout = 60.0
+
+[tools]
+count_tokens_enabled = true
+handled_tools = ["web_search", "web_fetch"]
+tool_max_iter = 8
+
+[thinking]
+enabled = true                           # When false, disables thinking and strips blocks

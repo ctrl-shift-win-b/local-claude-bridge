@@ -20,4 +20,4 @@ set PORT=1234
   --top-p 0.95 ^
   --repeat-penalty 1.05 ^
   --port %PORT% ^
-  --host 0.0.0.0
+  --host 127.0.0.1

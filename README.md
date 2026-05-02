@@ -1,6 +1,10 @@
-# local-claude-bridge
+# ClaudeCode-Qwen3.6-Bridge
 
-An Anthropic Messages API ↔ OpenAI Chat Completions bridge that allows [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to communicate with a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server (e.g., llama.cpp, LM Studio, Ollama).
+> **DISCLAIMER — LOCAL USE ONLY**
+>
+> This project is designed for **internal, local deployment only**. It connects a local LLM inference server with [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to act as a drop-in replacement for the Anthropic API. It is **not production-ready**: there is no authentication, no TLS, no rate limiting, no CORS restrictions, and no input sanitization. Do not deploy on any network where untrusted hosts can reach port 1234 or 1235. Use at your own risk.
+
+An Anthropic Messages API ↔ OpenAI Chat Completions bridge that allows Claude Code to communicate with a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server (e.g., llama.cpp, LM Studio, Ollama).
 
 ## What it does
 
@@ -46,19 +50,44 @@ This turns a local model that *almost* does tool calling correctly into one that
 
 ### Launching
 
-```bat
-.\start_local_claude.ps1
-```
-
-This starts the llama.cpp server, waits for it to be healthy, starts the bridge on `localhost:1235`, then launches Claude Code pointed at the bridge.
-
-To enable full debug logging:
+**Windows** — use `local-claude.bat` (thin wrapper around `local-claude.ps1`):
 
 ```bat
-.\start_local_claude.ps1 -DebugBridge
+local-claude
 ```
 
-Everything — request bodies, response bodies, every SSE chunk — is written to `bridge.log`.
+**Linux** — use `local-claude.sh` (make it executable once: `chmod +x local-claude.sh`):
+
+```bash
+./local-claude.sh
+```
+
+Both launchers kill any stale processes on ports 1234/1235, start the llama.cpp server (`start_server.bat` / `start_server.sh`), wait for it to be healthy, start the bridge on `localhost:1235`, wait for the bridge, then launch Claude Code with all required environment variables set. On exit, both launchers shut down the bridge and server cleanly.
+
+### Launcher flags
+
+| Windows flag | Linux flag | Description |
+|---|---|---|
+| `-DebugBridge` | `--debug-bridge` | Write every request/response/SSE chunk to `bridge.log` |
+| `-NoPoke` | `--no-poke` | Disable the poke/continuation mechanism |
+| `-VisionInternal` | `--vision-internal` | Pass images to the main model directly (multimodal model required) |
+| `-VisionExternal <url>` | `--vision-external <url>` | Route images through an external vision server |
+
+Additional arguments after the flags are passed through to `claude` unchanged.
+
+**Examples:**
+
+```bat
+rem Windows
+local-claude -VisionExternal http://192.168.50.38:1234/v1/chat/completions
+local-claude -DebugBridge -NoPoke
+```
+
+```bash
+# Linux
+./local-claude.sh --vision-external http://192.168.50.38:1234/v1/chat/completions
+./local-claude.sh --debug-bridge --no-poke
+```
 
 ## Configuration
 
@@ -93,7 +122,7 @@ The bridge has three vision modes, selected at startup:
 | Mode | Flag | Behavior |
 |---|---|---|
 | `disabled` (default) | _(none)_ | Image blocks are stripped and replaced with a "model cannot see images" notice |
-| `internal` | `--image-processing-internal` | Images are passed through to the main llama.cpp server as-is (requires a multimodal model) |
+| `internal` | `--image-processing-internal` | Images pass through to the main llama.cpp server as-is (requires a multimodal model) |
 | `external` | `--image-processing-external <url>` | Images are sent to a separate vision server; descriptions are injected as `[Image:]` text blocks |
 
 ### External mode
@@ -101,7 +130,7 @@ The bridge has three vision modes, selected at startup:
 Start the bridge with the vision server URL:
 
 ```bat
-python bridge.py --image-processing-external http://localhost:1234/v1/chat/completions
+python bridge.py --image-processing-external http://192.168.50.38:1234/v1/chat/completions
 ```
 
 What happens per request:
@@ -118,6 +147,10 @@ The system prompt is automatically extended with a relay instruction that tells 
 Claude Code's `WebSearch` tool routes through the bridge. When Qwen3 calls `web_search`, the bridge executes the query via DuckDuckGo (`ddgs`) and returns the results directly as plain text to Claude Code. No Anthropic API key or network calls to Anthropic required.
 
 The bridge also handles `web_fetch` — it GETs the URL, strips navigation/scripts/ads from the HTML, and returns up to 12 000 characters of readable text.
+
+## Claude Remote Session (claude.ai)
+
+Initial testing shows that opening Claude Code as a **remote session** via claude.ai connects without triggering Anthropic API usage — no tokens are consumed and no billing appears to be invoked, at least at first glance. This makes the remote session path a potentially cost-free way to interact with the bridge from any browser, though the exact accounting behavior has not been verified exhaustively.
 
 ## Known Issues
 
@@ -142,9 +175,11 @@ The poke trigger phrases ("I'll call...", "Let me use...", etc.) and the think-b
 | File | Description |
 |---|---|
 | `bridge.py` | Main bridge server (FastAPI) |
-| `start_server.bat` | Start llama.cpp server |
-| `start_local_claude.ps1` | PowerShell launcher — starts server, bridge, and Claude Code |
-| `tests/test_bridge.py` | 82-test pytest suite |
+| `start_server.bat` | Start llama.cpp server (Windows) |
+| `local-claude.bat` | Windows launcher — starts server, bridge, and Claude Code |
+| `local-claude.ps1` | PowerShell implementation called by the bat |
+| `local-claude.sh` | Linux launcher — equivalent of `local-claude.bat` for Ubuntu/Linux |
+| `tests/test_bridge.py` | 112-test pytest suite |
 | `bridge.log` | Server log (created at runtime) |
 | `LICENSE` | MIT License |
 

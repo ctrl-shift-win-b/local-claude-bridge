@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import tomllib
 import uuid
 from datetime import datetime
 from html.parser import HTMLParser
@@ -19,12 +20,12 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+# ---------------------------------------------------------------------------
+# CLI flags (parsed once, used everywhere — override TOML defaults)
+# ---------------------------------------------------------------------------
 DEBUG: bool = "--debug" in sys.argv
 _NO_POKE_FLAG: bool = "--no-poke" in sys.argv
 
-# ---------------------------------------------------------------------------
-# Image processing / vision flags
-# ---------------------------------------------------------------------------
 _IMAGE_PROCESSING_DISABLED = "--no-image-processing" in sys.argv
 _IMAGE_VISION_INTERNAL = "--image-processing-internal" in sys.argv
 _IMAGE_VISION_API: str | None = None
@@ -33,28 +34,124 @@ for _i, _arg in enumerate(sys.argv):
         _IMAGE_VISION_API = sys.argv[_i + 1]
 
 if _IMAGE_VISION_INTERNAL and _IMAGE_VISION_API:
-    log("ERROR: --image-processing-internal and --image-processing-external are mutually exclusive")
+    sys.stderr.write("ERROR: --image-processing-internal and --image-processing-external are mutually exclusive\n")
     sys.exit(1)
 
-BRIDGE_VISION_MODE: str = (
-    "internal" if _IMAGE_VISION_INTERNAL else
-    "external" if _IMAGE_VISION_API else
-    "disabled"
-)
-BRIDGE_VISION_API_URL: str = (
-    _IMAGE_VISION_API or os.getenv("BRIDGE_VISION_API_URL", "http://192.168.50.38:1234/v1/chat/completions")
-)
-BRIDGE_VISION_MODEL: str = os.getenv("BRIDGE_VISION_MODEL", "qwen/qwen3-vl-4b")
-BRIDGE_VISION_MAX_TOKENS: int = int(os.getenv("BRIDGE_VISION_MAX_TOKENS", "4096"))
-BRIDGE_VISION_TEMPERATURE: float = float(os.getenv("BRIDGE_VISION_TEMPERATURE", "0.3"))
-BRIDGE_VISION_TIMEOUT: float = float(os.getenv("BRIDGE_VISION_TIMEOUT", "60.0"))
+# ---------------------------------------------------------------------------
+# TOML defaults loader — load config.toml if present, fall back to hardcoded
+# ---------------------------------------------------------------------------
+_CFG_TOML: dict[str, Any] = {}
+
+
+def _load_toml_defaults() -> None:
+    """Load config.toml from the directory containing this module."""
+    global _CFG_TOML
+    config_path = os.path.join(os.path.dirname(__file__), "config.toml")
+    try:
+        with open(config_path, "rb") as f:
+            _CFG_TOML = tomllib.load(f)
+    except (FileNotFoundError, ModuleNotFoundError):
+        # tomllib is 3.11+; file simply absent means use all hardcoded fallbacks
+        pass
+
+
+# Legacy environment variable → TOML dotted key mapping.
+_LEGACY_ENV_MAP: dict[str, str] = {
+    "bridge.host": "BRIDGE_HOST",
+    "bridge.port": "BRIDGE_PORT",
+    "bridge.llama_base_url": "LLAMA_BASE_URL",
+    "bridge.logging.debug": "BRIDGE_DEBUG",
+    "poke.enabled": "BRIDGE_POKE_ENABLED",
+    "poke.max_retries": "BRIDGE_POKE_MAX_RETRIES",
+    "poke.delay_seconds": "BRIDGE_POKE_DELAY_SECONDS",
+    "vision.mode": "BRIDGE_VISION_MODE",
+    "vision.api_url": "BRIDGE_VISION_API_URL",
+    "vision.model": "BRIDGE_VISION_MODEL",
+    "vision.max_tokens": "BRIDGE_VISION_MAX_TOKENS",
+    "vision.temperature": "BRIDGE_VISION_TEMPERATURE",
+    "vision.timeout": "BRIDGE_VISION_TIMEOUT",
+    "tools.count_tokens_enabled": "BRIDGE_COUNT_TOKENS_ENABLED",
+    "tools.handled_tools": "BRIDGE_HANDLED_TOOLS",
+    "tools.tool_max_iter": "BRIDGE_TOOL_MAX_ITER",
+    "thinking.enabled": "BRIDGE_THINKING_ENABLED",
+    "vision.image_input": "BRIDGE_IMAGE_INPUT",
+}
+
+
+def _cfg(key: str, fallback: Any = None) -> Any:
+    """Resolve a config value: TOML → legacy env → new env → fallback.
+
+    Dot-separated keys map to nested TOML tables, e.g. ``"bridge.host"``.
+    """
+    # 1. Walk TOML dict via dotted path
+    parts = key.split(".")
+    node = _CFG_TOML
+    for p in parts:
+        if isinstance(node, dict) and p in node:
+            node = node[p]
+        else:
+            node = None
+            break
+    if node is not None:
+        return node
+
+    # 2. Legacy env var names (pre-TOML)
+    legacy_key = _LEGACY_ENV_MAP.get(key)
+    if legacy_key and legacy_key in os.environ:
+        return os.environ[legacy_key]
+
+    # 3. New env var names (same as key, uppercased)
+    new_key = key.upper().replace(".", "_")
+    if new_key in os.environ:
+        return os.environ[new_key]
+
+    # 4. Hardcoded fallback
+    return fallback
+
+
+# Load defaults from config.toml (may be absent — all names use fallbacks)
+_load_toml_defaults()
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Bridge settings — resolved via TOML → env → hardcoded fallback
 # ---------------------------------------------------------------------------
-POKE_ENABLED: bool = os.getenv("BRIDGE_POKE_ENABLED", "true").lower() == "true" and not _NO_POKE_FLAG
-POKE_MAX_RETRIES = 2
-POKE_DELAY_SECONDS = 1.0   # wait before firing poke; client disconnect during sleep cancels it
+BRIDGE_HOST: str = str(_cfg("bridge.host", "127.0.0.1"))
+BRIDGE_PORT: int = int(_cfg("bridge.port", 1235))
+LLAMA_BASE_URL: str = str(_cfg("bridge.llama_base_url", "http://localhost:1234"))
+
+# Logging — plain file write, flushed after every line
+_LOG_FILE = os.path.join(os.path.dirname(__file__), "bridge.log")
+_POKE_LOG_DIR = os.path.join(os.path.dirname(__file__), "poke_logs")
+_log_f = open(_LOG_FILE, "w", encoding="utf-8")
+if sys.platform == "win32":
+    try:
+        import subprocess as _subprocess
+        _user = os.environ.get("USERNAME", "")
+        if _user:
+            _subprocess.run(
+                ["icacls", _LOG_FILE, "/grant", f"{_user}:F"],
+                check=True, capture_output=True, timeout=5,
+            )
+    except Exception:
+        pass
+else:
+    os.chmod(_LOG_FILE, 0o600)
+
+# Debug flag (sys.argv overrides TOML)
+if DEBUG:
+    _CFG_TOML.setdefault("bridge", {}).setdefault("logging", {})["debug"] = True
+
+BRIDGE_DEBUG: bool = str(_cfg("bridge.logging.debug", "false")).lower() in ("1", "true", "yes")
+
+# ---------------------------------------------------------------------------
+# Poke settings
+# ---------------------------------------------------------------------------
+POKE_ENABLED: bool = (
+    str(_cfg("poke.enabled", "true")).lower() == "true"
+    and not _NO_POKE_FLAG
+)
+POKE_MAX_RETRIES = int(_cfg("poke.max_retries", 2))
+POKE_DELAY_SECONDS = float(_cfg("poke.delay_seconds", 1.0))
 POKE_TRIGGER_PHRASES = [
     "I will run",
     "I'll run",
@@ -74,29 +171,60 @@ POKE_TRIGGER_PHRASES = [
     "I am going to use",
     "I'm going to use",
 ]
-LLAMA_BASE_URL = "http://localhost:1234"
-BRIDGE_PORT = 1235
-COUNT_TOKENS_ENABLED = True   # set False to disable /v1/messages/count_tokens
 
-BRIDGE_HANDLED_TOOLS: frozenset[str] = frozenset({"web_search", "web_fetch"})
+# ---------------------------------------------------------------------------
+# Token counting & tool config
+# ---------------------------------------------------------------------------
+COUNT_TOKENS_ENABLED: bool = str(_cfg("tools.count_tokens_enabled", "true")).lower() == "true"
+handled_tools_raw = _cfg("tools.handled_tools")
+if isinstance(handled_tools_raw, list):
+    BRIDGE_HANDLED_TOOLS: frozenset[str] = frozenset(str(t) for t in handled_tools_raw)
+else:
+    BRIDGE_HANDLED_TOOLS = frozenset({"web_search", "web_fetch"})
+BRIDGE_TOOL_MAX_ITER = int(_cfg("tools.tool_max_iter", 8))
 
-# Model capability metadata — consumed by /v1/models endpoint
-DEFAULT_MODEL_ID = os.getenv("BRIDGE_MODEL_ID", "local-model")
-BRIDGE_THINKING_ENABLED = os.getenv("BRIDGE_THINKING_ENABLED", "true").lower() == "true"
-_BRIDGE_IMAGE_INPUT = (
-    os.getenv("BRIDGE_IMAGE_INPUT", "true").lower() == "true"
+# ---------------------------------------------------------------------------
+# Vision / image processing settings
+# ---------------------------------------------------------------------------
+BRIDGE_VISION_MODE: str = (
+    "internal" if _IMAGE_VISION_INTERNAL else
+    "external" if _IMAGE_VISION_API else
+    str(_cfg("vision.mode", "disabled"))
+)
+
+# External vision mode requires an explicit API URL — no hardcoded fallback.
+if BRIDGE_VISION_MODE == "external":
+    _explicit_api_url = _cfg("vision.api_url")
+    if not _explicit_api_url:
+        sys.stderr.write(
+            "ERROR: vision.mode=external requires vision.api_url to be set. "
+            "Set it in config.toml or via BRIDGE_VISION_API_URL env var.\n"
+        )
+        sys.exit(1)
+    BRIDGE_VISION_API_URL: str = str(_explicit_api_url)
+else:
+    # Non-external modes never read this variable — set to empty to avoid leaking internal IPs.
+    BRIDGE_VISION_API_URL: str = ""
+
+BRIDGE_VISION_MODEL: str = str(_cfg("vision.model", "qwen/qwen3-vl-4b"))
+BRIDGE_VISION_MAX_TOKENS: int = int(_cfg("vision.max_tokens", 4096))
+BRIDGE_VISION_TEMPERATURE: float = float(_cfg("vision.temperature", 0.3))
+BRIDGE_VISION_TIMEOUT: float = float(_cfg("vision.timeout", 60.0))
+
+_BRIDGE_IMAGE_INPUT: bool = (
+    str(_cfg("vision.image_input", "true")).lower() == "true"
     and not _IMAGE_PROCESSING_DISABLED
 )
 
 IMAGE_PROCESSING_ACTIVE: bool = (
     _BRIDGE_IMAGE_INPUT and BRIDGE_VISION_MODE != "disabled"
 )
-BRIDGE_STRUCTURED_OUTPUTS = os.getenv("BRIDGE_STRUCTURED_OUTPUTS", "true").lower() == "true"
-BRIDGE_MAX_COMPLETION_TOKENS = int(os.getenv("BRIDGE_MAX_COMPLETION_TOKENS", "8192"))
 
 # ---------------------------------------------------------------------------
 # Thinking / reasoning control
 # ---------------------------------------------------------------------------
+BRIDGE_THINKING_ENABLED: bool = str(_cfg("thinking.enabled", "true")).lower() == "true"
+
 # Maps Anthropic adaptive-thinking effort levels to llama.cpp thinking_budget_tokens.
 _EFFORT_BUDGET_MAP: dict[str, int] = {
     "low":    2048,
@@ -104,18 +232,22 @@ _EFFORT_BUDGET_MAP: dict[str, int] = {
     "high":   32768,
 }
 
-# Set BRIDGE_DISABLE_THINKING=1 in the environment to inject enable_thinking=false
-# into every request that does not already carry an explicit Anthropic thinking param.
-DISABLE_THINKING: bool = os.getenv("BRIDGE_DISABLE_THINKING", "").strip().lower() in ("1", "true", "yes")
-BRIDGE_TOOL_MAX_ITER = 8
+# Legacy env var BRIDGE_DISABLE_THINKING inverts thinking.enabled.
+# When set, it overrides the TOML/env value of thinking.enabled.
+_disable_thinking_env = os.getenv("BRIDGE_DISABLE_THINKING", "").strip().lower()
+if _disable_thinking_env in ("1", "true", "yes"):
+    BRIDGE_THINKING_ENABLED = False
+
+DISABLE_THINKING: bool = not BRIDGE_THINKING_ENABLED
+BRIDGE_STRUCTURED_OUTPUTS: bool = str(_cfg("bridge.structured_outputs", "true")).lower() == "true"
+BRIDGE_MAX_COMPLETION_TOKENS: int = int(_cfg("bridge.max_completion_tokens", 8192))
+
+# Model capability metadata — consumed by /v1/models endpoint
+DEFAULT_MODEL_ID: str = str(_cfg("bridge.model_id", "local-model"))
 
 # ---------------------------------------------------------------------------
 # Logging — plain file write, flushed after every line
 # ---------------------------------------------------------------------------
-_LOG_FILE = os.path.join(os.path.dirname(__file__), "bridge.log")
-_POKE_LOG_DIR = os.path.join(os.path.dirname(__file__), "poke_logs")
-_log_f = open(_LOG_FILE, "w", encoding="utf-8")
-
 def log(msg: str) -> None:
     line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}\n"
     print(line, end="")
@@ -2079,4 +2211,4 @@ async def count_tokens(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=BRIDGE_PORT, log_level="info")
+    uvicorn.run(app, host=BRIDGE_HOST, port=BRIDGE_PORT, log_level="info")

@@ -170,6 +170,27 @@ POKE_TRIGGER_PHRASES = [
     "I'm going to call",
     "I am going to use",
     "I'm going to use",
+    # Intent-to-continue phrases — model signals next action but doesn't call a tool
+    "Now let me",
+    "Now I'll",
+    "Now I will",
+    "Let me now",
+    "Let me look",
+    "Let me check",
+    "Let me verify",
+    "Let me review",
+    "Let me examine",
+    "Let me read",
+    # Plan mode — model announces plan writing but doesn't call the plan tool
+    "Let me write the plan",
+    "I'll write the plan",
+    "I will write the plan",
+    "Let me create the plan",
+    "I'll create the plan",
+    "I will create the plan",
+    "Let me finalize the plan",
+    "I can now write the plan",
+    "I can now create the plan",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1143,7 +1164,7 @@ def _should_poke(
     oai_resp: dict,
     tool_names: list[str],
     anthropic_response: dict,
-    last_is_tool_result: bool = False,
+    last_tools_were_reads: bool = False,
     plan_mode_active: bool = False,
 ) -> bool:
     if not POKE_ENABLED:
@@ -1169,9 +1190,9 @@ def _should_poke(
         log("[POKE] plan mode active + restricted tool — suppressing")
         return False
 
-    # Hard stall: empty response after a tool result
-    if last_is_tool_result and not anthropic_response.get("content"):
-        log("[POKE] hard stall — empty response after tool_result — poking")
+    # Stall after reads: model gathered information but produced no response
+    if last_tools_were_reads and not anthropic_response.get("content"):
+        log("[POKE] empty response after read-only tools — poking")
         return True
 
     choice = oai_resp.get("choices", [{}])[0]
@@ -1200,6 +1221,8 @@ def _should_poke(
 
 
 PLAN_MODE_RESTRICTED_TOOLS = frozenset({"Write", "Edit", "Agent"})
+
+READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "WebFetch", "WebSearch"})
 
 
 def _extract_plan_mode_state(oai_request: dict) -> bool:
@@ -1262,8 +1285,9 @@ async def call_with_poke(
 
     anthropic_resp = oai_to_anthropic_response(oai_resp, original_model, oai_tools)
 
+    last_tools_were_reads = _last_tools_were_all_reads(oai_request)
     for attempt in range(POKE_MAX_RETRIES):
-        if not _should_poke(oai_resp, tool_names, anthropic_resp, plan_mode_active=plan_mode_active):
+        if not _should_poke(oai_resp, tool_names, anthropic_resp, last_tools_were_reads, plan_mode_active):
             break
         _log_poke_trigger(attempt + 1, POKE_MAX_RETRIES, oai_resp)
         poke_request = dict(oai_request)
@@ -1276,6 +1300,7 @@ async def call_with_poke(
         ]
         oai_resp = await call_llama(client, poke_request)
         anthropic_resp = oai_to_anthropic_response(oai_resp, original_model, oai_tools)
+        last_tools_were_reads = False
 
     return anthropic_resp
 
@@ -1287,6 +1312,23 @@ async def call_with_poke(
 def _last_message_is_tool_result(oai_request: dict) -> bool:
     msgs = oai_request.get("messages", [])
     return bool(msgs) and msgs[-1].get("role") == "tool"
+
+
+def _last_tools_were_all_reads(oai_request: dict) -> bool:
+    """Return True if the assistant message preceding the last tool results used only read-type tools."""
+    msgs = oai_request.get("messages", [])
+    i = len(msgs) - 1
+    while i >= 0 and msgs[i].get("role") == "tool":
+        i -= 1
+    if i < 0 or msgs[i].get("role") != "assistant":
+        return False
+    tool_calls = msgs[i].get("tool_calls") or []
+    if not tool_calls:
+        return False
+    return all(
+        tc.get("function", {}).get("name", "") in READ_ONLY_TOOLS
+        for tc in tool_calls
+    )
 
 
 async def _emit_anthropic_sse(
@@ -1374,7 +1416,8 @@ async def _stream_with_poke(
 ) -> AsyncGenerator[str, None]:
     """Buffer only the think block; stream everything after it live. Poke if think mentions a tool."""
     last_is_tool_result = _last_message_is_tool_result(oai_request)
-    log(f"→ stream start model={original_model} last_tool_result={last_is_tool_result}")
+    last_tools_were_reads = _last_tools_were_all_reads(oai_request)
+    log(f"→ stream start model={original_model} last_tool_result={last_is_tool_result} last_reads={last_tools_were_reads}")
     log_debug(f"OAI STREAM REQUEST →\n{json.dumps(oai_request, indent=2)}")
 
     oai_tools = oai_request.get("tools")
@@ -1685,7 +1728,7 @@ async def _stream_with_poke(
 
         async with httpx.AsyncClient() as poke_client:
             for attempt in range(POKE_MAX_RETRIES):
-                if not _should_poke(oai_resp, tool_names, anthropic_resp, last_is_tool_result, plan_mode_active):
+                if not _should_poke(oai_resp, tool_names, anthropic_resp, last_tools_were_reads, plan_mode_active):
                     break
                 _log_poke_trigger(attempt + 1, POKE_MAX_RETRIES, oai_resp)
                 log(f"[POKE] waiting {POKE_DELAY_SECONDS}s (client disconnect will cancel)")
@@ -1704,7 +1747,7 @@ async def _stream_with_poke(
                 }
                 oai_resp = await call_llama(poke_client, poke_req)
                 anthropic_resp = oai_to_anthropic_response(oai_resp, original_model, oai_tools)
-                last_is_tool_result = False
+                last_tools_were_reads = False
 
         # Execute bridge-handled tools (web_search / web_fetch) if present
         if _oai_resp_has_only_bridge_calls(oai_resp):
@@ -1737,7 +1780,7 @@ async def _stream_with_poke(
 
         async with httpx.AsyncClient() as poke_client:
             for attempt in range(POKE_MAX_RETRIES):
-                if not _should_poke(oai_resp, tool_names, anthropic_resp, last_is_tool_result, plan_mode_active):
+                if not _should_poke(oai_resp, tool_names, anthropic_resp, last_tools_were_reads, plan_mode_active):
                     break
                 _log_poke_trigger(attempt + 1, POKE_MAX_RETRIES, oai_resp)
                 log(f"[POKE] waiting {POKE_DELAY_SECONDS}s (client disconnect will cancel)")
@@ -1756,7 +1799,7 @@ async def _stream_with_poke(
                 }
                 oai_resp = await call_llama(poke_client, poke_req)
                 anthropic_resp = oai_to_anthropic_response(oai_resp, original_model, oai_tools)
-                last_is_tool_result = False
+                last_tools_were_reads = False
 
         # Execute bridge-handled tools (web_search / web_fetch) if present
         if _oai_resp_has_only_bridge_calls(oai_resp):

@@ -1,5 +1,5 @@
 [bridge]
-host = "127.0.0.1"                       # Bind address (fix for security issue #2)
+host = "0.0.0.0"                       # Bind address (fix for security issue #2)
 port = 1235                              # Anthropic-compatible API listen port
 llama_base_url = "http://localhost:1234" # OpenAI-compatible llama.cpp server URL
 

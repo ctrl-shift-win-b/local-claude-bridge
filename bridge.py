@@ -1222,7 +1222,7 @@ def _should_poke(
 
 PLAN_MODE_RESTRICTED_TOOLS = frozenset({"Write", "Edit", "Agent"})
 
-READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "WebFetch", "WebSearch"})
+READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoRead"})
 
 
 def _extract_plan_mode_state(oai_request: dict) -> bool:
@@ -1250,7 +1250,7 @@ def _poke_suppressed_by_plan_mode(tool_names: list[str], plan_mode_active: bool)
 
 POKE_MESSAGE = {
     "role": "user",
-    "content": "You intended to use a tool but didn't call it. Please make the tool call now.",
+    "content": "Your response may be incomplete. If you intended to use a tool, please call it now. Otherwise, feel free to continue or confirm you're done.",
 }
 
 

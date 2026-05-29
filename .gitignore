@@ -1,5 +1,7 @@
 bridge.log
 PROJECT_HANDOFF.txt
+STILL_FAILING.txt
+poke_logs/
 
 # Python
 __pycache__/

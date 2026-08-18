@@ -13,7 +13,7 @@ delay_seconds = 1.0
 
 [vision]
 mode = "external"                        # One of: disabled, internal, external
-api_url = "http://192.168.50.38:1234/v1/chat/completions"
+api_url = "http://<vision-server-host>:1234/v1/chat/completions"
 model = "qwen/qwen3-vl-4b"
 max_tokens = 4096
 temperature = 0.3

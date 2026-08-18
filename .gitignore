@@ -1,6 +1,7 @@
 bridge.log
 llama-server.log
 bridge-stdout.log
+config.toml
 PROJECT_HANDOFF.txt
 STILL_FAILING.txt
 poke_logs/

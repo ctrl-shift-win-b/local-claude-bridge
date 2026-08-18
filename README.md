@@ -84,13 +84,13 @@ Additional arguments after the flags are passed through to `claude` unchanged.
 
 ```bat
 rem Windows
-local-claude -VisionExternal http://192.168.50.38:1234/v1/chat/completions
+local-claude -VisionExternal http://<vision-server-host>:1234/v1/chat/completions
 local-claude -DebugBridge -NoPoke
 ```
 
 ```bash
 # Linux
-./local-claude.sh --vision-external http://192.168.50.38:1234/v1/chat/completions
+./local-claude.sh --vision-external http://<vision-server-host>:1234/v1/chat/completions
 ./local-claude.sh --debug-bridge --no-poke
 ```
 
@@ -135,7 +135,7 @@ The bridge has three vision modes, selected at startup:
 Start the bridge with the vision server URL:
 
 ```bat
-python bridge.py --image-processing-external http://192.168.50.38:1234/v1/chat/completions
+python bridge.py --image-processing-external http://<vision-server-host>:1234/v1/chat/completions
 ```
 
 What happens per request:

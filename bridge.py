@@ -253,6 +253,19 @@ _EFFORT_BUDGET_MAP: dict[str, int] = {
     "high":   32768,
 }
 
+# HF-recommended sampling profiles for Qwen3.8-27B (model card, Aug 2026), applied
+# dynamically per-request based on whether thinking mode is actually engaged — the
+# two profiles disagree sharply (presence_penalty 0.0 vs 1.5, temperature 1.0 vs 0.7)
+# so a single static server default can't fit both.
+_THINKING_SAMPLING: dict[str, float] = {
+    "temperature": 1.0, "top_p": 0.95, "top_k": 20,
+    "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0,
+}
+_INSTRUCT_SAMPLING: dict[str, float] = {
+    "temperature": 0.7, "top_p": 0.80, "top_k": 20,
+    "min_p": 0.0, "presence_penalty": 1.5, "repeat_penalty": 1.0,
+}
+
 # Legacy env var BRIDGE_DISABLE_THINKING inverts thinking.enabled.
 # When set, it overrides the TOML/env value of thinking.enabled.
 _disable_thinking_env = os.getenv("BRIDGE_DISABLE_THINKING", "").strip().lower()
@@ -530,7 +543,15 @@ def _anthropic_messages_to_oai(messages: list[dict]) -> list[dict]:
     oai_messages: list[dict] = []
 
     for msg in messages:
+        # Anthropic's messages array only documents user/assistant roles, but this
+        # harness sometimes injects a "system"-role reminder mid-conversation. The
+        # sole leading system message (from the top-level `system` field) is added
+        # separately before this list — a second, non-leading system message trips
+        # Qwen3.8-27B's chat template ("System message must be at the beginning"),
+        # so treat any mid-conversation system message as contextual user content.
         role = msg.get("role")
+        if role == "system":
+            role = "user"
         content = msg.get("content")
 
         if isinstance(content, str):
@@ -656,8 +677,6 @@ def build_oai_request(anthropic_body: dict) -> dict:
     # Scalar params
     if "max_tokens" in anthropic_body:
         oai["max_tokens"] = anthropic_body["max_tokens"]
-    if "temperature" in anthropic_body:
-        oai["temperature"] = anthropic_body["temperature"]
     if "stream" in anthropic_body:
         oai["stream"] = anthropic_body["stream"]
     if anthropic_body.get("stream"):
@@ -668,6 +687,7 @@ def build_oai_request(anthropic_body: dict) -> dict:
     # Anthropic "adaptive" + effort        → thinking_budget_tokens via _EFFORT_BUDGET_MAP
     # Absent thinking + DISABLE_THINKING   → chat_template_kwargs.enable_thinking=false
     thinking = anthropic_body.get("thinking")
+    thinking_active = True
     if thinking:
         t_type = thinking.get("type", "")
         if t_type == "enabled":
@@ -680,6 +700,13 @@ def build_oai_request(anthropic_body: dict) -> dict:
         # Unknown future types are silently ignored — forward-compatible.
     elif DISABLE_THINKING:
         oai["chat_template_kwargs"] = {"enable_thinking": False}
+        thinking_active = False
+
+    # Sampling profile matched to the thinking mode this request actually engages.
+    # An explicit client-supplied temperature still wins.
+    oai.update(_THINKING_SAMPLING if thinking_active else _INSTRUCT_SAMPLING)
+    if "temperature" in anthropic_body:
+        oai["temperature"] = anthropic_body["temperature"]
 
     return oai
 

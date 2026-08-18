@@ -1,4 +1,4 @@
-# ClaudeCode-Qwen3.6-Bridge
+# ClaudeCode-Qwen3.8-Bridge
 
 > **DISCLAIMER — LOCAL USE ONLY**
 >
@@ -39,8 +39,13 @@ This turns a local model that *almost* does tool calling correctly into one that
 | **External vision** | Images pasted inline or returned by the `Read` tool are routed to a separate vision model; descriptions are injected in-place so the main model sees them as text |
 | **Vision cache** | Per-process SHA-256 cache prevents re-analyzing the same image on every turn |
 | **Debug mode** | Pass `--debug` to `bridge.py` to log every request body, response body, and SSE chunk to `bridge.log` |
+| **Thinking-aware sampling profiles** | Per-request `temperature`/`top_p`/`top_k`/`min_p`/`presence_penalty`/`repeat_penalty` switch between Qwen3.8-27B's HF-recommended "Thinking Mode" and "Instruct Mode" profiles, matched to whether that request actually engages thinking (`bridge.py` `_THINKING_SAMPLING` / `_INSTRUCT_SAMPLING`); an explicit client-supplied `temperature` still wins |
 
 ## Setup
+
+### Reference model (Linux launcher defaults)
+
+`start_server.sh` / `local-claude.sh` on Linux are configured for **Qwen3.8-27B-Q5_K_M** (`bartowski/Qwen3.8-27B-GGUF`) at **256K context** (`262144`, this model's native window) with `-ctk q8_0 -ctv q8_0` KV cache quantization and a single slot (`--parallel 1`) — sized to fit a 32GB card (RTX 5090) with ~1GB headroom. Adjust `MODEL_PATH` / `CONTEXT_SIZE` env vars to point at a different model or context size; see the VRAM/quant tradeoffs discussion in the repo history if retuning for a different card. The Windows scripts (`start_server.bat`, `local-claude.ps1`) are on a separate, currently unsynced config (`Qwen3.6-35B-A3B`) — update them separately if you want parity.
 
 ### Dependencies
 

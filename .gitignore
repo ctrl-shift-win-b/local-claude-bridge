@@ -1,4 +1,6 @@
 bridge.log
+llama-server.log
+bridge-stdout.log
 PROJECT_HANDOFF.txt
 STILL_FAILING.txt
 poke_logs/

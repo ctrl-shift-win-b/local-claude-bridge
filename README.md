@@ -45,7 +45,7 @@ This turns a local model that *almost* does tool calling correctly into one that
 
 ### Reference model (Linux launcher defaults)
 
-`start_server.sh` / `local-claude.sh` on Linux are configured for **Qwen3.8-27B-Q5_K_M** (`bartowski/Qwen3.8-27B-GGUF`) at **256K context** (`262144`, this model's native window) with `-ctk q8_0 -ctv q8_0` KV cache quantization and a single slot (`--parallel 1`) — sized to fit a 32GB card (RTX 5090) with ~1GB headroom. Adjust `MODEL_PATH` / `CONTEXT_SIZE` env vars to point at a different model or context size; see the VRAM/quant tradeoffs discussion in the repo history if retuning for a different card. The Windows scripts (`start_server.bat`, `local-claude.ps1`) are on a separate, currently unsynced config (`Qwen3.6-35B-A3B`) — update them separately if you want parity.
+`start_server.sh` / `local-claude.sh` on Linux are configured for **Qwen3.8-27B-Q5_K_M** (`bartowski/Qwen3.8-27B-GGUF`) at **256K context** (`262144`, this model's native window) with `-ctk q8_0 -ctv q8_0` KV cache quantization and a single slot (`--parallel 1`) — sized to fit a 32GB card (RTX 5090) with ~1GB headroom. Claude Code is capped at 70% of that (`183500` tokens) so autocompact/prefill stay bounded while a large tool result still fits in `n_ctx`. Override with `MODEL_PATH` / `CONTEXT_SIZE`. The Windows scripts (`start_server.bat`, `local-claude.ps1`) are on a separate, currently unsynced config (`Qwen3.6-35B-A3B`) — update them separately if you want parity.
 
 ### Dependencies
 
@@ -77,6 +77,8 @@ Both launchers kill any stale processes on ports 1234/1235, start the llama.cpp 
 | `-NoPoke` | `--no-poke` | Disable the poke/continuation mechanism |
 | `-VisionInternal` | `--vision-internal` | Pass images to the main model directly (multimodal model required) |
 | `-VisionExternal <url>` | `--vision-external <url>` | Route images through an external vision server |
+
+The Linux launcher hides the `Agent` tool by default (a subagent on `--parallel 1` evicts the main KV cache). It also caps concurrent subagents at 1, disables nesting, Explore/Plan agents, and fork mode. Re-enable with `ALLOW_AGENTS=1 ./local-claude.sh`.
 
 Additional arguments after the flags are passed through to `claude` unchanged.
 

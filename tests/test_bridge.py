@@ -473,6 +473,53 @@ class TestBuildOaiRequestThinking:
         assert _EFFORT_BUDGET_MAP["low"] < _EFFORT_BUDGET_MAP["medium"] < _EFFORT_BUDGET_MAP["high"]
 
 
+class TestToolsToOaiPatternStrip:
+    """llama.cpp GBNF chokes on JSON Schema pattern (e.g. Artifact \\-)."""
+
+    def test_nested_pattern_stripped_other_keys_kept(self):
+        body = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "name": "Artifact",
+                "description": "store a doc",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "doc_id": {
+                            "type": "string",
+                            "pattern": r"[A-Za-z0-9_\-.~:@+]",
+                        },
+                        "op": {"type": "string", "enum": ["set", "update"]},
+                    },
+                    "required": ["doc_id"],
+                },
+            }],
+        }
+        oai = build_oai_request(body)
+        params = oai["tools"][0]["function"]["parameters"]
+        assert "pattern" not in params["properties"]["doc_id"]
+        assert params["properties"]["doc_id"]["type"] == "string"
+        assert params["properties"]["op"]["enum"] == ["set", "update"]
+        assert params["required"] == ["doc_id"]
+        # original Anthropic body must not be mutated
+        assert body["tools"][0]["input_schema"]["properties"]["doc_id"]["pattern"] == r"[A-Za-z0-9_\-.~:@+]"
+
+    def test_tool_without_pattern_unchanged(self):
+        body = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "name": "Bash",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            }],
+        }
+        oai = build_oai_request(body)
+        assert oai["tools"][0]["function"]["parameters"] == body["tools"][0]["input_schema"]
+
+
 # ===========================================================================
 # 4. _should_poke — 6 tests
 # ===========================================================================

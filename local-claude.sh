@@ -46,11 +46,12 @@ wait_health() {
 kill_port 1235
 kill_port 1234
 
-# Must match start_server.sh's CONTEXT_SIZE default so the 80% cap tracks the
-# server's actual context window. Exported so an override here also reaches
-# start_server.sh (run as a child process below).
+# Must match start_server.sh's CONTEXT_SIZE default. n_ctx stays at the native
+# 256K so a large tool result on top of compacted history still fits; Claude
+# Code is capped at 70% so autocompact/prefill stay bounded. Exported so an
+# override here also reaches start_server.sh (run as a child process below).
 export CONTEXT_SIZE="${CONTEXT_SIZE:-262144}"
-MAX_CONTEXT_TOKENS=$(( CONTEXT_SIZE * 80 / 100 ))
+MAX_CONTEXT_TOKENS=$(( CONTEXT_SIZE * 70 / 100 ))
 
 SERVER_PID=""
 BRIDGE_PID=""
@@ -96,8 +97,19 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER="0"
 export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="75"
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$MAX_CONTEXT_TOKENS"
 
-if [[ ${#PASSTHRU[@]} -gt 0 ]]; then
-    claude "${PASSTHRU[@]}"
-else
-    claude
+# llama.cpp --parallel 1: a subagent is a second full context that evicts the
+# main KV cache and re-prefills. Hide Agent unless ALLOW_AGENTS=1. Concurrent
+# cannot be 0 (Claude Code ignores non-positive values); 1 is the floor.
+export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="${CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS:-1}"
+export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH="${CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH:-1}"
+export CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS="${CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS:-1}"
+export CLAUDE_CODE_FORK_SUBAGENT="${CLAUDE_CODE_FORK_SUBAGENT:-0}"
+
+CLAUDE_ARGS=()
+if [[ "${ALLOW_AGENTS:-0}" != "1" ]]; then
+    CLAUDE_ARGS+=(--disallowedTools Agent)
 fi
+if [[ ${#PASSTHRU[@]} -gt 0 ]]; then
+    CLAUDE_ARGS+=("${PASSTHRU[@]}")
+fi
+claude "${CLAUDE_ARGS[@]}"

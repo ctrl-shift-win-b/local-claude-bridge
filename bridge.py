@@ -619,6 +619,20 @@ _NATIVE_TOOL_SCHEMAS: dict[str, tuple[str, dict]] = {
 }
 
 
+def _strip_json_schema_patterns(node: Any) -> Any:
+    """Drop JSON Schema 'pattern' keys from a schema tree.
+
+    llama.cpp converts tool schemas to GBNF and treats '\\-' inside a character
+    class as an unknown escape (e.g. Artifact doc_id '[A-Za-z0-9_\\-.~:@+]'),
+    which 400s the whole request. Types/required/enum still constrain the call.
+    """
+    if isinstance(node, dict):
+        return {k: _strip_json_schema_patterns(v) for k, v in node.items() if k != "pattern"}
+    if isinstance(node, list):
+        return [_strip_json_schema_patterns(v) for v in node]
+    return node
+
+
 def _tools_to_oai(tools: list[dict]) -> list[dict]:
     oai_tools = []
     for tool in tools:
@@ -634,7 +648,11 @@ def _tools_to_oai(tools: list[dict]) -> list[dict]:
             parameters = tool.get("input_schema", {})
         oai_tools.append({
             "type": "function",
-            "function": {"name": name, "description": description, "parameters": parameters},
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": _strip_json_schema_patterns(parameters),
+            },
         })
     return oai_tools
 
@@ -2234,8 +2252,12 @@ async def messages(request: Request):
                 client, oai_request, tool_names, original_model, plan_mode_active
             )
         except httpx.HTTPStatusError as e:
-            log(f"ERROR llama.cpp error: {e}")
-            raise HTTPException(status_code=502, detail=f"Upstream error: {e.response.status_code}")
+            body = (e.response.text or "").strip()[:500]
+            log(f"ERROR llama.cpp error: {e} body={body}")
+            detail = f"Upstream error: {e.response.status_code}"
+            if body:
+                detail = f"{detail}: {body}"
+            raise HTTPException(status_code=502, detail=detail)
         except httpx.RequestError as e:
             log(f"ERROR connection error: {e}")
             raise HTTPException(status_code=502, detail="Could not connect to llama.cpp")

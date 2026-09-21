@@ -10,8 +10,8 @@ GPU_LAYERS="${GPU_LAYERS:-999}"
 # 262144 (256K, this model's native context) with q8_0 KV cache uses ~28.75/32 GB
 # VRAM on a 5090 (20.75GB Q5_K_M weights + ~8GB KV cache), leaving headroom for
 # compute buffers. Single slot (--parallel 1) so the full budget goes to one
-# session — Claude Code's system prompt + full tool schema alone can run 50-60K
-# tokens, so don't drop this below ~65536.
+# session. Claude Code's token cap is set separately in local-claude.sh (70% of
+# this window) so a large tool result still fits in n_ctx.
 CONTEXT_SIZE="${CONTEXT_SIZE:-262144}"
 PORT="${PORT:-1234}"
 

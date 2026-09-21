@@ -520,6 +520,80 @@ class TestToolsToOaiPatternStrip:
         assert oai["tools"][0]["function"]["parameters"] == body["tools"][0]["input_schema"]
 
 
+class TestAgentsOffload:
+    def test_normalize_origin_and_completions_path(self):
+        n = bridge._normalize_openai_base
+        assert n("http://gpu.example:1234") == "http://gpu.example:1234"
+        assert n("http://gpu.example:1234/") == "http://gpu.example:1234"
+        assert n("http://gpu.example:1234/v1") == "http://gpu.example:1234"
+        assert n("http://gpu.example:1234/v1/chat/completions") == "http://gpu.example:1234"
+        assert n("http://<agents-host>:1234") == ""
+        assert n("") == ""
+
+    def test_fetch_summarizer_is_offload(self):
+        body = {"messages": [{"role": "user", "content": "extract from this page"}], "tools": []}
+        assert bridge._is_offload_job(body, 4000, enabled=True) is True
+
+    def test_title_job_is_offload(self):
+        body = {"messages": [{"role": "user", "content": "title this chat"}]}
+        assert bridge._is_offload_job(body, 800, enabled=True) is True
+
+    def test_coding_turn_with_tools_stays_local(self):
+        body = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "WebFetch"}],
+        }
+        assert bridge._is_offload_job(body, 4000, enabled=True) is False
+
+    def test_long_transcript_stays_local(self):
+        body = {"messages": [{"role": "user", "content": "x"}]}
+        assert bridge._is_offload_job(body, 20000, enabled=True) is False
+
+    def test_disabled_never_offloads(self):
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        assert bridge._is_offload_job(body, 100, enabled=False) is False
+
+    def test_prepare_caps_max_tokens_and_disables_thinking(self):
+        prepared = bridge._prepare_offload_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 32000,
+            "thinking_budget_tokens": 8192,
+        })
+        assert prepared["max_tokens"] == bridge.AGENTS_MAX_TOKENS
+        assert prepared["chat_template_kwargs"]["enable_thinking"] is False
+        assert prepared["stream"] is False
+        assert "thinking_budget_tokens" not in prepared
+
+    def test_local_fallback_caps_and_uses_instruct_sampling(self):
+        req = bridge._prepare_local_fallback_request({
+            "model": "local-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 32000,
+            "thinking_budget_tokens": 8192,
+        })
+        assert req["max_tokens"] == bridge.AGENTS_MAX_TOKENS
+        assert req["chat_template_kwargs"]["enable_thinking"] is False
+        assert req["temperature"] == bridge._INSTRUCT_SAMPLING["temperature"]
+        assert req["model"] == "local-model"
+
+    def test_complete_offload_falls_back_to_llama(self):
+        async def run():
+            fail = AsyncMock(side_effect=bridge.httpx.ConnectError("3090 down"))
+            local = AsyncMock(return_value={"choices": [{"message": {"content": "ok"}}]})
+            with patch.object(bridge, "call_agents", fail):
+                with patch.object(bridge, "call_llama", local):
+                    out = await bridge.complete_offload_job({
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 32000,
+                    })
+            assert out["choices"][0]["message"]["content"] == "ok"
+            sent = local.await_args.args[1]
+            assert sent["max_tokens"] == bridge.AGENTS_MAX_TOKENS
+            assert sent["chat_template_kwargs"]["enable_thinking"] is False
+
+        asyncio.run(run())
+
+
 # ===========================================================================
 # 4. _should_poke — 6 tests
 # ===========================================================================

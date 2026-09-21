@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Linux launcher: starts the llama.cpp server, the bridge, then Claude Code.
 # Mirrors local-claude.ps1. Usage: ./local-claude.sh [--debug-bridge] [--no-poke]
-#                                    [--vision-internal] [--vision-external <url>] [claude args...]
+#                                    [--vision-internal] [--vision-external <url>]
+#                                    [--agents-url <url>] [--no-agents] [claude args...]
 
 set -uo pipefail
 
@@ -11,6 +12,8 @@ DEBUG_BRIDGE=0
 NO_POKE=1
 VISION_INTERNAL=0
 VISION_EXTERNAL=""
+AGENTS_URL=""
+NO_AGENTS=0
 PASSTHRU=()
 
 while [[ $# -gt 0 ]]; do
@@ -19,6 +22,8 @@ while [[ $# -gt 0 ]]; do
         --no-poke)         NO_POKE=1; shift ;;
         --vision-internal) VISION_INTERNAL=1; shift ;;
         --vision-external) VISION_EXTERNAL="$2"; shift 2 ;;
+        --agents-url)      AGENTS_URL="$2"; shift 2 ;;
+        --no-agents)       NO_AGENTS=1; shift ;;
         *)                 PASSTHRU+=("$1"); shift ;;
     esac
 done
@@ -82,6 +87,8 @@ BRIDGE_ARGS=("$DIR/bridge.py")
 [[ "$NO_POKE"         -eq 1 ]] && BRIDGE_ARGS+=(--no-poke)
 [[ "$VISION_INTERNAL" -eq 1 ]] && BRIDGE_ARGS+=(--image-processing-internal)
 [[ -n "$VISION_EXTERNAL" ]]    && BRIDGE_ARGS+=(--image-processing-external "$VISION_EXTERNAL")
+[[ -n "$AGENTS_URL" ]]         && BRIDGE_ARGS+=(--agents-url "$AGENTS_URL")
+[[ "$NO_AGENTS"       -eq 1 ]] && BRIDGE_ARGS+=(--no-agents)
 
 "$DIR/.venv/bin/python" "${BRIDGE_ARGS[@]}" > "$BRIDGE_LOG" 2>&1 &
 BRIDGE_PID=$!

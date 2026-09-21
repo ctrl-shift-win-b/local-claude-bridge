@@ -26,3 +26,19 @@ tool_max_iter = 8
 
 [thinking]
 enabled = true                           # When false, disables thinking and strips blocks
+
+# Second OpenAI-compatible server for nested Haiku jobs (WebFetch extract,
+# title gen). Env vars override this file: AGENTS_ENABLED, AGENTS_BASE_URL,
+# AGENTS_MODEL, AGENTS_MAX_TOKENS, AGENTS_TIMEOUT, AGENTS_CONNECT_TIMEOUT,
+# AGENTS_TEMPERATURE. --agents-url on the launcher also wins.
+# base_url may be http://host:1234 or .../v1/chat/completions.
+# If the second box is down, jobs fall back to the main model with the same cap.
+[agents]
+enabled = false
+base_url = "http://<agents-host>:1234"
+model = "qwen/qwen3-vl-4b"
+max_tokens = 1024
+max_input_tokens = 16000
+timeout = 60.0
+connect_timeout = 2.0
+temperature = 0.3

@@ -29,9 +29,13 @@ _NO_POKE_FLAG: bool = "--no-poke" in sys.argv
 _IMAGE_PROCESSING_DISABLED = "--no-image-processing" in sys.argv
 _IMAGE_VISION_INTERNAL = "--image-processing-internal" in sys.argv
 _IMAGE_VISION_API: str | None = None
+_AGENTS_URL_FLAG: str | None = None
+_NO_AGENTS_FLAG: bool = "--no-agents" in sys.argv
 for _i, _arg in enumerate(sys.argv):
     if _arg == "--image-processing-external" and _i + 1 < len(sys.argv):
         _IMAGE_VISION_API = sys.argv[_i + 1]
+    if _arg == "--agents-url" and _i + 1 < len(sys.argv):
+        _AGENTS_URL_FLAG = sys.argv[_i + 1]
 
 if _IMAGE_VISION_INTERNAL and _IMAGE_VISION_API:
     sys.stderr.write("ERROR: --image-processing-internal and --image-processing-external are mutually exclusive\n")
@@ -75,15 +79,32 @@ _LEGACY_ENV_MAP: dict[str, str] = {
     "tools.tool_max_iter": "BRIDGE_TOOL_MAX_ITER",
     "thinking.enabled": "BRIDGE_THINKING_ENABLED",
     "vision.image_input": "BRIDGE_IMAGE_INPUT",
+    "agents.enabled": "BRIDGE_AGENTS_ENABLED",
+    "agents.base_url": "BRIDGE_AGENTS_BASE_URL",
+    "agents.model": "BRIDGE_AGENTS_MODEL",
+    "agents.max_tokens": "BRIDGE_AGENTS_MAX_TOKENS",
+    "agents.max_input_tokens": "BRIDGE_AGENTS_MAX_INPUT_TOKENS",
+    "agents.timeout": "BRIDGE_AGENTS_TIMEOUT",
+    "agents.connect_timeout": "BRIDGE_AGENTS_CONNECT_TIMEOUT",
+    "agents.temperature": "BRIDGE_AGENTS_TEMPERATURE",
 }
 
 
 def _cfg(key: str, fallback: Any = None) -> Any:
-    """Resolve a config value: TOML → legacy env → new env → fallback.
+    """Resolve a config value: env → legacy env → TOML → fallback.
 
     Dot-separated keys map to nested TOML tables, e.g. ``"bridge.host"``.
+    Environment variables win so a second GPU box can be pointed at without
+    editing config.toml (``AGENTS_BASE_URL``, ``AGENTS_ENABLED``, …).
     """
-    # 1. Walk TOML dict via dotted path
+    new_key = key.upper().replace(".", "_")
+    if new_key in os.environ:
+        return os.environ[new_key]
+
+    legacy_key = _LEGACY_ENV_MAP.get(key)
+    if legacy_key and legacy_key in os.environ:
+        return os.environ[legacy_key]
+
     parts = key.split(".")
     node = _CFG_TOML
     for p in parts:
@@ -95,17 +116,6 @@ def _cfg(key: str, fallback: Any = None) -> Any:
     if node is not None:
         return node
 
-    # 2. Legacy env var names (pre-TOML)
-    legacy_key = _LEGACY_ENV_MAP.get(key)
-    if legacy_key and legacy_key in os.environ:
-        return os.environ[legacy_key]
-
-    # 3. New env var names (same as key, uppercased)
-    new_key = key.upper().replace(".", "_")
-    if new_key in os.environ:
-        return os.environ[new_key]
-
-    # 4. Hardcoded fallback
     return fallback
 
 
@@ -276,6 +286,46 @@ DISABLE_THINKING: bool = not BRIDGE_THINKING_ENABLED
 BRIDGE_STRUCTURED_OUTPUTS: bool = str(_cfg("bridge.structured_outputs", "true")).lower() == "true"
 BRIDGE_MAX_COMPLETION_TOKENS: int = int(_cfg("bridge.max_completion_tokens", 8192))
 
+# ---------------------------------------------------------------------------
+# Remote small-model offload (fetch summarizer / title / haiku jobs)
+# ---------------------------------------------------------------------------
+def _normalize_openai_base(url: str) -> str:
+    """Origin of an OpenAI-compatible server.
+
+    Accepts ``http://host:1234``, ``http://host:1234/v1``, or the full
+    ``.../v1/chat/completions`` path used by the vision setting.
+    """
+    u = (url or "").strip().rstrip("/")
+    for suffix in ("/v1/chat/completions", "/chat/completions", "/v1"):
+        if u.endswith(suffix):
+            u = u[: -len(suffix)].rstrip("/")
+            break
+    if "<" in u or ">" in u:
+        return ""
+    return u
+
+
+_AGENTS_BASE = _normalize_openai_base(
+    _AGENTS_URL_FLAG if _AGENTS_URL_FLAG is not None else str(_cfg("agents.base_url", "") or "")
+)
+_AGENTS_URL_ENV_SET = "AGENTS_BASE_URL" in os.environ or "BRIDGE_AGENTS_BASE_URL" in os.environ
+_AGENTS_ENABLED_ENV_SET = "AGENTS_ENABLED" in os.environ or "BRIDGE_AGENTS_ENABLED" in os.environ
+_AGENTS_EXPLICIT_ON = str(_cfg("agents.enabled", "false")).lower() in ("1", "true", "yes")
+# A URL in the environment is an opt-in unless AGENTS_ENABLED is explicitly false.
+_AGENTS_IMPLICIT_ON = _AGENTS_URL_ENV_SET and not _AGENTS_ENABLED_ENV_SET
+AGENTS_ENABLED: bool = (
+    not _NO_AGENTS_FLAG
+    and bool(_AGENTS_BASE)
+    and (_AGENTS_URL_FLAG is not None or _AGENTS_EXPLICIT_ON or _AGENTS_IMPLICIT_ON)
+)
+AGENTS_BASE_URL: str = _AGENTS_BASE if AGENTS_ENABLED else ""
+AGENTS_MODEL: str = str(_cfg("agents.model", "qwen/qwen3-vl-4b"))
+AGENTS_MAX_TOKENS: int = int(_cfg("agents.max_tokens", 1024))
+AGENTS_MAX_INPUT_TOKENS: int = int(_cfg("agents.max_input_tokens", 16000))
+AGENTS_TIMEOUT: float = float(_cfg("agents.timeout", 60.0))
+AGENTS_CONNECT_TIMEOUT: float = float(_cfg("agents.connect_timeout", 2.0))
+AGENTS_TEMPERATURE: float = float(_cfg("agents.temperature", 0.3))
+
 # Model capability metadata — consumed by /v1/models endpoint
 DEFAULT_MODEL_ID: str = str(_cfg("bridge.model_id", "local-model"))
 
@@ -306,7 +356,8 @@ async def _log_model_info():
         f"vision_mode={BRIDGE_VISION_MODE} "
         f"vision_api={BRIDGE_VISION_API_URL} "
         f"structured_outputs={BRIDGE_STRUCTURED_OUTPUTS} "
-        f"max_completion_tokens={BRIDGE_MAX_COMPLETION_TOKENS}"
+        f"max_completion_tokens={BRIDGE_MAX_COMPLETION_TOKENS} "
+        f"agents={AGENTS_ENABLED} agents_url={AGENTS_BASE_URL} agents_model={AGENTS_MODEL}"
     )
 
 
@@ -1299,6 +1350,111 @@ POKE_MESSAGE = {
 }
 
 
+def _is_offload_job(body: dict, estimated_tokens: int, *, enabled: bool | None = None) -> bool:
+    """True for nested Haiku-style jobs: no tools, short transcript.
+
+    Claude Code's WebFetch summarizer and title generator look like this.
+    Full coding turns always include the tool list and stay on the 27B.
+    """
+    if not (AGENTS_ENABLED if enabled is None else enabled):
+        return False
+    if body.get("tools"):
+        return False
+    msgs = body.get("messages") or []
+    if len(msgs) > 3:
+        return False
+    if estimated_tokens > AGENTS_MAX_INPUT_TOKENS:
+        return False
+    return True
+
+
+def _capped_offload_max_tokens(oai_request: dict) -> int:
+    requested = oai_request.get("max_tokens")
+    try:
+        requested_n = int(requested) if requested is not None else AGENTS_MAX_TOKENS
+    except (TypeError, ValueError):
+        requested_n = AGENTS_MAX_TOKENS
+    return max(1, min(requested_n, AGENTS_MAX_TOKENS))
+
+
+def _prepare_offload_request(oai_request: dict) -> dict:
+    """Strip llama.cpp-only fields and cap generation for the small model."""
+    return {
+        "model": AGENTS_MODEL,
+        "messages": oai_request.get("messages") or [],
+        "max_tokens": _capped_offload_max_tokens(oai_request),
+        "temperature": AGENTS_TEMPERATURE,
+        "stream": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+def _prepare_local_fallback_request(oai_request: dict) -> dict:
+    """Same cap/thinking-off as the 3090 job, aimed at the local 27B."""
+    req = {
+        "model": oai_request.get("model") or DEFAULT_MODEL_ID,
+        "messages": oai_request.get("messages") or [],
+        "max_tokens": _capped_offload_max_tokens(oai_request),
+        "stream": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    req.update(_INSTRUCT_SAMPLING)
+    return req
+
+
+def _agents_timeout() -> httpx.Timeout:
+    # Short connect so a powered-off 3090 fails fast; long read if it is up.
+    return httpx.Timeout(AGENTS_TIMEOUT, connect=AGENTS_CONNECT_TIMEOUT)
+
+
+async def call_agents(client: httpx.AsyncClient, oai_request: dict) -> dict:
+    payload = _prepare_offload_request(oai_request)
+    log(
+        f"  [AGENTS] → {AGENTS_BASE_URL} model={payload['model']} "
+        f"max_tokens={payload['max_tokens']} msgs={len(payload['messages'])}"
+    )
+    resp = await client.post(
+        f"{AGENTS_BASE_URL}/v1/chat/completions",
+        json=payload,
+        timeout=_agents_timeout(),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    usage = data.get("usage") or {}
+    log(
+        f"  [AGENTS] ← finish={choice.get('finish_reason')} "
+        f"out_tokens={usage.get('completion_tokens')} "
+        f"text_len={len(msg.get('content') or '')}"
+    )
+    return data
+
+
+async def complete_offload_job(oai_request: dict) -> dict:
+    """Prefer the 3090; on failure run the same capped job on the local 27B."""
+    async with httpx.AsyncClient() as client:
+        try:
+            return await call_agents(client, oai_request)
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            err = f"{e.__class__.__name__}: {e}"
+            log(f"  [AGENTS] failed ({err}); falling back to local 27B")
+            fallback = _prepare_local_fallback_request(oai_request)
+            return await call_llama(client, fallback)
+
+
+async def stream_offload_to_anthropic(
+    oai_request: dict,
+    msg_id: str,
+    original_model: str,
+) -> AsyncGenerator[str, None]:
+    """Run a small-model job to completion, then emit Anthropic SSE."""
+    oai_resp = await complete_offload_job(oai_request)
+    anthropic_resp = oai_to_anthropic_response(oai_resp, original_model)
+    async for sse in _emit_anthropic_sse(anthropic_resp, msg_id):
+        yield sse
+
+
 async def call_llama(client: httpx.AsyncClient, oai_request: dict) -> dict:
     log_debug(f"OAI REQUEST →\n{json.dumps(oai_request, indent=2)}")
     resp = await client.post(
@@ -2232,31 +2388,46 @@ async def messages(request: Request):
                 log("[VISION] no vision available — injected limitation notice for model")
 
     oai_request = build_oai_request(body)
+    estimated_input_tokens = _estimate_token_count(body)
+    log(f"  estimated_input_tokens={estimated_input_tokens}")
+    offload = _is_offload_job(body, estimated_input_tokens)
+    if offload:
+        log(f"  [AGENTS] offloading (no tools, msgs={len(body.get('messages') or [])})")
 
     if is_stream:
         oai_request["stream"] = True
         msg_id = f"msg_{uuid.uuid4().hex[:24]}"
-        estimated_input_tokens = _estimate_token_count(body)
-        log(f"  estimated_input_tokens={estimated_input_tokens}")
+        gen = (
+            stream_offload_to_anthropic(oai_request, msg_id, original_model)
+            if offload
+            else stream_oai_to_anthropic(
+                oai_request, msg_id, original_model, tool_names,
+                estimated_input_tokens, plan_mode_active,
+            )
+        )
         return StreamingResponse(
-            stream_oai_to_anthropic(oai_request, msg_id, original_model, tool_names, estimated_input_tokens, plan_mode_active),
+            gen,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # Non-streaming: poke logic applies
+    # Non-streaming: poke logic applies (skipped for offloaded haiku jobs)
     oai_request["stream"] = False
     async with httpx.AsyncClient() as client:
         try:
-            anthropic_resp = await call_with_poke(
-                client, oai_request, tool_names, original_model, plan_mode_active
-            )
+            if offload:
+                oai_resp = await complete_offload_job(oai_request)
+                anthropic_resp = oai_to_anthropic_response(oai_resp, original_model)
+            else:
+                anthropic_resp = await call_with_poke(
+                    client, oai_request, tool_names, original_model, plan_mode_active
+                )
         except httpx.HTTPStatusError as e:
-            body = (e.response.text or "").strip()[:500]
-            log(f"ERROR llama.cpp error: {e} body={body}")
+            err_body = (e.response.text or "").strip()[:500]
+            log(f"ERROR llama.cpp error: {e} body={err_body}")
             detail = f"Upstream error: {e.response.status_code}"
-            if body:
-                detail = f"{detail}: {body}"
+            if err_body:
+                detail = f"{detail}: {err_body}"
             raise HTTPException(status_code=502, detail=detail)
         except httpx.RequestError as e:
             log(f"ERROR connection error: {e}")

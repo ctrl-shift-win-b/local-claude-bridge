@@ -77,8 +77,10 @@ Both launchers kill any stale processes on ports 1234/1235, start the llama.cpp 
 | `-NoPoke` | `--no-poke` | Disable the poke/continuation mechanism |
 | `-VisionInternal` | `--vision-internal` | Pass images to the main model directly (multimodal model required) |
 | `-VisionExternal <url>` | `--vision-external <url>` | Route images through an external vision server |
+| _(none)_ | `--agents-url <url>` | Offload Haiku jobs (fetch extract, titles) to a second OpenAI-compatible server |
+| _(none)_ | `--no-agents` | Disable that offload; those jobs stay on the main model |
 
-The Linux launcher hides the `Agent` tool by default (a subagent on `--parallel 1` evicts the main KV cache). It also caps concurrent subagents at 1, disables nesting, Explore/Plan agents, and fork mode. Re-enable with `ALLOW_AGENTS=1 ./local-claude.sh`.
+The Linux launcher hides the `Agent` tool by default (a subagent on `--parallel 1` evicts the main KV cache). It also caps concurrent subagents at 1, disables nesting, Explore/Plan agents, and fork mode. Re-enable with `ALLOW_AGENTS=1 ./local-claude.sh`. That is unrelated to `--agents-url`, which is a second **inference** box, not Claude Code subagents.
 
 Additional arguments after the flags are passed through to `claude` unchanged.
 
@@ -93,8 +95,34 @@ local-claude -DebugBridge -NoPoke
 ```bash
 # Linux
 ./local-claude.sh --vision-external http://<vision-server-host>:1234/v1/chat/completions
+./local-claude.sh --agents-url http://<agents-host>:1234
 ./local-claude.sh --debug-bridge --no-poke
 ```
+
+### Two-machine split (main GPU + small-model box)
+
+Coding turns stay on the local llama.cpp server (`bridge.llama_base_url`). Nested Claude Code jobs with **no tools** and a short prompt (WebFetch page extract, session title) can be sent to a second OpenAI-compatible server (LM Studio or llama.cpp, any GPU).
+
+Configure **one** of:
+
+| Method | Example |
+|---|---|
+| `config.toml` `[agents]` | `enabled = true`, `base_url = "http://192.168.1.50:1234"` |
+| Environment | `AGENTS_ENABLED=true AGENTS_BASE_URL=http://192.168.1.50:1234 ./local-claude.sh` |
+| Launcher flag | `./local-claude.sh --agents-url http://192.168.1.50:1234` |
+
+`base_url` / `AGENTS_BASE_URL` may be the origin (`http://host:1234`) or the full `/v1/chat/completions` path. Environment variables override `config.toml`. `--no-agents` or a down second box falls back to the main model with thinking off and `max_tokens` still capped.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `AGENTS_ENABLED` | Master switch | `false` |
+| `AGENTS_BASE_URL` | Second server origin or chat-completions URL | _(empty)_ |
+| `AGENTS_MODEL` | Model id the second server expects | `qwen/qwen3-vl-4b` |
+| `AGENTS_MAX_TOKENS` | Hard cap on those jobs | `1024` |
+| `AGENTS_MAX_INPUT_TOKENS` | Larger jobs stay on the main model | `16000` |
+| `AGENTS_TIMEOUT` | Read timeout (seconds) | `60` |
+| `AGENTS_CONNECT_TIMEOUT` | Connect timeout; fail fast if the box is off | `2` |
+| `AGENTS_TEMPERATURE` | Sampling temperature for offload jobs | `0.3` |
 
 ## Configuration
 
